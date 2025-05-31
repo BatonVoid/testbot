@@ -13,6 +13,7 @@ from sqlalchemy import create_engine, Column, Integer, String, BigInteger, Boole
 from sqlalchemy.sql import func
 from sqlalchemy.orm import declarative_base, sessionmaker
 import random
+from asyncio import create_task
 import logging
 import json
 import copy 
@@ -111,6 +112,8 @@ async def get_name(message: Message, state: FSMContext):
     await send_next_question(message.chat.id, state)
 
 # Отправка вопроса
+from asyncio import create_task
+
 async def send_next_question(chat_id, state: FSMContext):
     data = await state.get_data()
     index = data.get("index", 0)
@@ -160,37 +163,34 @@ async def send_next_question(chat_id, state: FSMContext):
         await send_next_question(chat_id, state)
         return
 
-    shuffled_options = question.options[:]
-    random.shuffle(shuffled_options)
-    
-    # Сохраняем перемешанные варианты в состояние
-     # Перемешиваем копию вариантов, чтобы не менять оригинальные в БД
+    # Перемешиваем варианты
     original_options = copy.deepcopy(question.options)
     random.shuffle(original_options)
-
-    # Сохраняем правильный индекс после перемешивания
     correct_index = original_options.index(question.correct_option)
-
-    # Сохраняем в FSM состояние
-    await state.update_data(current_question_id=q_id, correct_index=correct_index)
+    await state.update_data(current_question_id=q_id, correct_index=correct_index, options=original_options)
 
     kb = InlineKeyboardBuilder()
     for i, opt in enumerate(original_options):
         callback_data = f"q{q_id}o{i}"
         kb.button(text=opt, callback_data=callback_data)
-
     kb.adjust(1)
-    logger.info(f"Sending question {q_id}: {question.text} with callback_data: {[b.callback_data for row in kb.as_markup().inline_keyboard for b in row]}")
 
     await bot.send_message(chat_id, question.text, reply_markup=kb.as_markup())
 
+    # Стартуем таймер отдельно
+    create_task(question_timeout(chat_id, state, index, q_id))
+
+
+async def question_timeout(chat_id, state: FSMContext, expected_index: int, q_id: int):
     await asyncio.sleep(40)
     data = await state.get_data()
-    if data.get("index", 0) == index:
+    current_index = data.get("index", 0)
+    if current_index == expected_index:
         logger.info(f"User {chat_id} did not answer question {q_id} in time")
-        await bot.send_message(chat_id, "Время вышло! Переходим к следующему вопросу.")
-        await state.update_data(index=index + 1)
+        await bot.send_message(chat_id, "⏰ Время вышло! Переходим к следующему вопросу.")
+        await state.update_data(index=current_index + 1)
         await send_next_question(chat_id, state)
+
 
 # Обработка ответа
 @router.callback_query(TestStates.in_test)
@@ -198,6 +198,8 @@ async def handle_answer(callback: CallbackQuery, state: FSMContext):
     data = await state.get_data()
     index = data.get("index", 0)
     question_ids = data.get("questions", [])
+    options = data.get("options", [])
+
     if index >= len(question_ids):
         await callback.answer("Тест завершён.", show_alert=True)
         return
@@ -213,21 +215,22 @@ async def handle_answer(callback: CallbackQuery, state: FSMContext):
         if callback.data.startswith('q'):
             parts = callback.data.split('o')
             opt_id = int(parts[1])
-
             correct_index = data.get("correct_index")
-            if correct_index is None:
-                logger.error("Correct index not found in state")
+
+            if correct_index is None or not options:
+                logger.error("Missing correct_index or options in state")
                 await callback.answer("Ошибка состояния. Попробуйте позже.", show_alert=True)
                 return
+
+            selected_option = options[opt_id]
 
             if opt_id == correct_index:
                 score = data.get("score", 0) + 1
                 await state.update_data(score=score)
-                await callback.message.answer("Правильный ответ! 🎉")
+                await callback.message.answer("✅ Правильный ответ! 🎉")
             else:
-                await callback.message.answer(f"Неправильно. Правильный ответ: {question.correct_option}")
-            
-            selected_option = current_options[opt_id]
+                await callback.message.answer(f"❌ Неправильно. Правильный ответ: {question.correct_option}")
+
     except (IndexError, ValueError) as e:
         logger.error(f"Invalid callback data: {callback.data}, error: {e}")
         await callback.answer("Ошибка при обработке ответа.", show_alert=True)
