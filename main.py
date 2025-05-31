@@ -50,7 +50,7 @@ class Question(Base):
     text = Column(String)
     options = Column(JSON)
     correct_option = Column(String)
-
+Base.metadata.create_all(engine)
 
 sample_questions = [
                     {
