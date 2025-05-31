@@ -836,6 +836,9 @@ async def start(message: Message, state: FSMContext):
     await message.answer("Введите ваше ФИО для участия в тесте:")
     await state.set_state(TestStates.waiting_name)
 
+
+
+
 # Получение ФИО
 @router.message(TestStates.waiting_name)
 async def get_name(message: Message, state: FSMContext):
@@ -941,6 +944,33 @@ async def handle_answer(callback: CallbackQuery, state: FSMContext):
         await send_next_question(callback.message.chat.id, state)
     else:
         await finish_test(callback.message.chat.id, state)
+
+
+@router.message(Command("top10"))
+async def top10(message: Message):
+    try:
+        with Session() as db:
+            users = (
+                db.query(User)
+                .filter(User.completed == True)
+                .order_by(User.score.desc(), User.estimated_duration.asc())
+                .limit(10)
+                .all()
+            )
+
+        if not users:
+            await message.answer("Пока никто не прошёл тест.")
+            return
+
+        text = "<b>🏆 Топ 10 участников:</b>\n"
+        for i, user in enumerate(users, 1):
+            mins = user.estimated_duration // 60 if user.estimated_duration else "—"
+            text += f"{i}. {user.full_name} — {user.score} баллов, {mins} мин\n"
+
+        await message.answer(text)
+    except Exception as e:
+        logger.error(f"Error in /top10: {e}")
+        await message.answer("Ошибка при получении результатов.")
 
 # Запуск
 if __name__ == "__main__":
