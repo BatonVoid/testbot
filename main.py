@@ -14,6 +14,7 @@ from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 from aiogram.enums import ParseMode
 import random
+from aiogram.types import DefaultBotProperties
 import logging
 import json
 
@@ -21,7 +22,7 @@ TOKEN = "7909566566:AAEPuzHlvuME-WTOaL7jbGB_FHHCFtfG40Q"
 TEST_START = datetime(2025, 5, 31, 0, 0)
 TEST_END = datetime(2025, 5, 31, 23, 59, 59)
 
-bot = Bot(token=TOKEN, parse_mode=ParseMode.HTML)
+bot = Bot(token=TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher(storage=MemoryStorage())
 router = Router()
 dp.include_router(router)
