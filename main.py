@@ -1,6 +1,7 @@
 import asyncio
+from aiogram import DefaultBotProperties
 from aiogram import Bot, Dispatcher, F, Router
-from aiogram.types import Message, CallbackQuery, DefaultBotProperties
+from aiogram.types import Message, CallbackQuery
 from aiogram.enums import ParseMode
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
