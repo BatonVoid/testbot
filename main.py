@@ -920,52 +920,51 @@ async def get_name(message: Message, state: FSMContext):
         return
 
 # Отправка следующего вопроса
-async def send_next_question(chat_id, state: FSMContext):
-    data = await state.get_data()
-    index = data["index"]
-    question_ids = data["questions"]
-
-    if index >= len(question_ids):
-        try:
-            await finish_test(chat_id, state)
-        except TelegramForbiddenError:
-            logger.warning(f"User {chat_id} blocked the bot")
-            await state.clear()
-        return
-
-    q_id = question_ids[index]
-    with Session() as db:
-        question = db.query(Question).get(q_id)
-
-    options = question.options.copy()
-    random.shuffle(options)
-
-    kb = InlineKeyboardBuilder()
-    question_text = f"Вопрос {index + 1}/{len(question_ids)}:\n{question.text}\n\n"
-    for i, opt in enumerate(options, 1):
-        question_text += f"{i}. {opt}\n"
-        kb.button(text=str(i), callback_data=opt)
-
+async def send_next_question(chat_id: int, state: FSMContext):
     try:
-        msg = await bot.send_message(chat_id, question_text, reply_markup=kb.as_markup())
-        await state.update_data(last_message_id=msg.message_id, current_options=options, current_question_id=q_id)
-    except TelegramForbiddenError:
-        logger.warning(f"User {chat_id} blocked the bot")
-        await state.clear()
-        return
-
-    await asyncio.sleep(40)
-    data = await state.get_data()
-    if data["index"] == index and not data.get("answered"):
-        try:
-            await bot.delete_message(chat_id=chat_id, message_id=msg.message_id)
-            await state.update_data(index=index + 1, answered=False)
-            await bot.send_message(chat_id, "Время вышло! Следующий вопрос:")
-            await send_next_question(chat_id, state)
-        except TelegramForbiddenError:
-            logger.warning(f"User {chat_id} blocked the bot")
+        user_data = await state.get_data()
+        questions = user_data.get("questions", [])
+        current_question_idx = user_data.get("current_question", 0)
+        
+        if current_question_idx >= len(questions):
+            score = user_data.get("score", 0)
+            with Session() as session:
+                user = session.query(User).filter_by(telegram_id=chat_id).first()
+                if user:
+                    user.score = score
+                    user.completed = True
+                    session.commit()
+            await bot.send_message(
+                chat_id,
+                f"🌟 Тест завершен! Ваш результат: {score}/{len(questions)}. Спасибо за участие! 🚀"
+            )
             await state.clear()
             return
+
+        question = questions[current_question_idx]
+        keyboard = InlineKeyboardBuilder()
+        for idx in range(len(question.options)):
+            # Используем индекс вместо текста варианта
+            callback_data = f"answer_{question.id}_{idx}"
+            if len(callback_data.encode('utf-8')) > 64:
+                logger.error(f"Callback_data слишком длинное: {callback_data}")
+                await bot.send_message(chat_id, "Ошибка при формировании вопроса. Свяжитесь с администратором.")
+                return
+            keyboard.add({"text": question.options[idx], "callback_data": callback_data})
+        keyboard.adjust(1)
+
+        await bot.send_message(
+            chat_id,
+            f"Вопрос {current_question_idx + 1}/{len(questions)}:\n{question.text}",
+            reply_markup=keyboard.build()
+        )
+        await state.update_data(current_question=current_question_idx + 1)
+        logger.info(f"Отправлен вопрос {current_question_idx + 1} для chat_id {chat_id}")
+    except TelegramForbiddenError:
+        logger.error(f"Пользователь {chat_id} заблокировал бота.")
+    except Exception as e:
+        logger.error(f"Ошибка в send_next_question: {e}")
+        await bot.send_message(chat_id, "Произошла ошибка. Попробуйте снова.")
 
 # Ответ на вопрос
 @router.callback_query(TestStates.in_test)
