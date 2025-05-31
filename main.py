@@ -98,9 +98,17 @@ async def get_name(message: Message, state: FSMContext):
         db.add(user)
         db.commit()
 
-    questions = db.query(Question).all()
-    random.shuffle(questions)
-    await state.update_data(index=0, questions=[q.id for q in questions], score=0)
+    # Выбираем 40 случайных вопросов
+    questions = db.query(Question.id).order_by(func.random()).limit(40).all()
+    if not questions:
+        logger.error("No questions found in database")
+        await message.answer("Ошибка: вопросы не найдены.")
+        await state.clear()
+        return
+
+    question_ids = [q.id for q in questions]
+    logger.info(f"Selected 40 questions: {question_ids}")
+    await state.update_data(index=0, questions=question_ids, score=0, full_name=full_name)
     await state.set_state(TestStates.in_test)
     await send_next_question(message.chat.id, state)
 
@@ -112,19 +120,43 @@ async def send_next_question(chat_id, state: FSMContext):
 
     if index >= len(question_ids):
         score = data.get("score", 0)
+        user_name = data.get("full_name", "Путник")
+        total_questions = len(question_ids)  # Должно быть 40
+        percentage = (score / total_questions * 100) if total_questions > 0 else 0
+
+        # Сохраняем результат в базе
         user = db.query(User).filter_by(telegram_id=chat_id).first()
         if user:
             user.score = score
             user.completed = True
             db.commit()
-            await bot.send_message(chat_id, f"Тест завершён! Вы набрали {score} баллов.")
         else:
             logger.error(f"User with telegram_id {chat_id} not found")
             await bot.send_message(chat_id, "Ошибка: пользователь не найден.")
+            await state.clear()
+            return
+
+        # Формируем сообщение с результатами
+        result_message = (
+            f"🌟 {user_name}, тест завершён! 🌟\n"
+            f"Вы набрали <b>{score}</b> из <b>{total_questions}</b> баллов.\n"
+            f"Процент правильных ответов: <b>{percentage:.1f}%</b>.\n"
+        )
+        if percentage >= 90:
+            result_message += "Фантастический результат! Вы настоящий звёздный герой! 🚀"
+        elif percentage >= 70:
+            result_message += "Отличная работа! Вы сияете, как яркая звезда! ✨"
+        elif percentage >= 50:
+            result_message += "Хороший результат! Продолжайте идти к звёздам! 🌠"
+        else:
+            result_message += "Не сдавайтесь! Каждая попытка приближает вас к вершинам! 💪"
+
+        await bot.send_message(chat_id, result_message)
+        await state.clear()  # Очищаем состояние
         return
 
     q_id = question_ids[index]
-    question = db.get(Question, q_id)  # Используем Session.get для SQLAlchemy 2.0
+    question = db.get(Question, q_id)
     if not question:
         logger.error(f"Question with id {q_id} not found")
         await bot.send_message(chat_id, "Вопрос не найден.")
@@ -140,7 +172,7 @@ async def send_next_question(chat_id, state: FSMContext):
             logger.error(f"Callback data too long ({byte_length} bytes): {callback_data}")
             callback_data = f"q{q_id}o{i}"[:64]
         kb.button(text=opt, callback_data=callback_data)
-    kb.adjust(1)  # Одна кнопка в строке
+    kb.adjust(1)
     logger.info(f"Sending question {q_id}: {question.text} with callback_data: {[b.callback_data for row in kb.as_markup().inline_keyboard for b in row]}")
 
     await bot.send_message(chat_id, question.text, reply_markup=kb.as_markup())
@@ -154,20 +186,42 @@ async def send_next_question(chat_id, state: FSMContext):
         await state.update_data(index=index + 1)
         await send_next_question(chat_id, state)
 
+
 # Обработка ответа
 @router.callback_query(TestStates.in_test)
 async def handle_answer(callback: CallbackQuery, state: FSMContext):
     data = await state.get_data()
-    index = data["index"]
-    question_ids = data["questions"]
-    q_id = question_ids[index]
-    question = db.query(Question).get(q_id)
+    index = data.get("index", 0)
+    question_ids = data.get("questions", [])
+    if index >= len(question_ids):
+        await callback.answer("Тест завершён.", show_alert=True)
+        return
 
-    if callback.data == question.correct_option:
-        score = data["score"] + 1
-        await state.update_data(score=score)
-    await callback.answer("Ответ принят.")
-    await state.update_data(index=index+1)
+    q_id = question_ids[index]
+    question = db.get(Question, q_id)
+    if not question:
+        logger.error(f"Question with id {q_id} not found")
+        await callback.answer("Ошибка: вопрос не найден.", show_alert=True)
+        return
+
+    try:
+        if callback.data.startswith('q'):
+            parts = callback.data.split('o')
+            opt_id = int(parts[1])
+            selected_option = question.options[opt_id]
+            if selected_option == question.correct_option:
+                score = data.get("score", 0) + 1
+                await state.update_data(score=score)
+                await callback.message.answer("Правильный ответ! 🎉")
+            else:
+                await callback.message.answer(f"Неправильно. Правильный ответ: {question.correct_option}")
+    except (IndexError, ValueError) as e:
+        logger.error(f"Invalid callback data: {callback.data}, error: {e}")
+        await callback.answer("Ошибка при обработке ответа.", show_alert=True)
+        return
+
+    await callback.answer()
+    await state.update_data(index=index + 1)
     await send_next_question(callback.message.chat.id, state)
 
 # Команда /top10
