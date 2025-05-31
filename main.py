@@ -18,8 +18,8 @@ from aiogram.exceptions import TelegramForbiddenError
 
 # Настройки
 TOKEN = "7909566566:AAEPuzHlvuME-WTOaL7jbGB_FHHCFtfG40Q"
-TEST_START = datetime(2025, 6, 1, 0, 0)   # 1 мая, 00:00
-TEST_END   = datetime(2025, 6, 1, 23, 59, 59)  # 1 мая, 23:59:59
+TEST_START = datetime(2025, 5, 31, 0, 0)   # 1 мая, 00:00
+TEST_END   = datetime(2025, 5, 31, 23, 59, 59)  # 1 мая, 23:59:59
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
