@@ -16,8 +16,8 @@ import random
 import json
 
 TOKEN = "7909566566:AAEPuzHlvuME-WTOaL7jbGB_FHHCFtfG40Q"
-# TEST_START = datetime(2025, 5, 31, 11, 0)
-# TEST_END = datetime(2025, 5, 31, 18, 0)
+TEST_START = datetime(2025, 5, 31, 0, 0)
+TEST_END = datetime(2025, 5, 31, 23, 59, 59)
 
 bot = Bot(token=TOKEN, parse_mode=ParseMode.HTML)
 dp = Dispatcher(storage=MemoryStorage())
