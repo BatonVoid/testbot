@@ -13,6 +13,7 @@ from sqlalchemy import create_engine, Column, Integer, String, BigInteger, Boole
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 import random
+import json
 
 TOKEN = "ТОКЕН_СЮДА"
 TEST_START = datetime(2025, 5, 1, 15, 0)
@@ -53,18 +54,18 @@ class TestStates(StatesGroup):
     in_test = State()
 
 # Вопросы (добавь свои реальные вопросы в БД заранее)
-def seed_questions():
-    if db.query(Question).count() == 0:
-        for i in range(1, 151):
-            q = Question(
-                text=f"Вопрос №{i}: Какая столица Франции?",
-                options=["Париж", "Лондон", "Берлин", "Мадрид"],
-                correct_option="Париж"
-            )
-            db.add(q)
-        db.commit()
+def load_questions_from_file():
+    with open("questions.json", "r", encoding="utf-8") as f:
+        question_data = json.load(f)
 
-seed_questions()
+    with Session() as db:
+        if db.query(Question).count() == 0:
+            for q in question_data:
+                db.add(Question(text=q["text"], options=q["options"], correct_option=q["correct"]))
+            db.commit()
+            logger.info("✅ Вопросы из файла загружены в БД.")
+
+load_questions_from_file()
 
 # Команда /start
 @router.message(CommandStart())
