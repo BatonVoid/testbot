@@ -15,6 +15,7 @@ from sqlalchemy.orm import declarative_base, sessionmaker
 import random
 import logging
 import json
+import copy 
 
 TOKEN = "7909566566:AAEPuzHlvuME-WTOaL7jbGB_FHHCFtfG40Q"
 TEST_START = datetime(2025, 5, 31, 0, 0)
@@ -163,15 +164,19 @@ async def send_next_question(chat_id, state: FSMContext):
     random.shuffle(shuffled_options)
     
     # Сохраняем перемешанные варианты в состояние
-    await state.update_data(current_options=shuffled_options)
-    
+     # Перемешиваем копию вариантов, чтобы не менять оригинальные в БД
+    original_options = copy.deepcopy(question.options)
+    random.shuffle(original_options)
+
+    # Сохраняем правильный индекс после перемешивания
+    correct_index = original_options.index(question.correct_option)
+
+    # Сохраняем в FSM состояние
+    await state.update_data(current_question_id=q_id, correct_index=correct_index)
+
     kb = InlineKeyboardBuilder()
-    for i, opt in enumerate(shuffled_options):
+    for i, opt in enumerate(original_options):
         callback_data = f"q{q_id}o{i}"
-        byte_length = len(callback_data.encode('utf-8'))
-        if byte_length > 64:
-            logger.error(f"Callback data too long ({byte_length} bytes): {callback_data}")
-            callback_data = callback_data[:64]
         kb.button(text=opt, callback_data=callback_data)
 
     kb.adjust(1)
@@ -208,10 +213,19 @@ async def handle_answer(callback: CallbackQuery, state: FSMContext):
         if callback.data.startswith('q'):
             parts = callback.data.split('o')
             opt_id = int(parts[1])
-            current_options = data.get("current_options", question.options)
-            if not (0 <= opt_id < len(current_options)):
-                await callback.answer("Неверный выбор.", show_alert=True)
+
+            correct_index = data.get("correct_index")
+            if correct_index is None:
+                logger.error("Correct index not found in state")
+                await callback.answer("Ошибка состояния. Попробуйте позже.", show_alert=True)
                 return
+
+            if opt_id == correct_index:
+                score = data.get("score", 0) + 1
+                await state.update_data(score=score)
+                await callback.message.answer("Правильный ответ! 🎉")
+            else:
+                await callback.message.answer(f"Неправильно. Правильный ответ: {question.correct_option}")
             
             selected_option = current_options[opt_id]
     except (IndexError, ValueError) as e:
