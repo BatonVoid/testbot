@@ -10,6 +10,7 @@ from aiogram.filters import Command, CommandStart
 from aiogram.fsm.storage.memory import MemoryStorage
 from datetime import datetime, timedelta
 from sqlalchemy import create_engine, Column, Integer, String, BigInteger, Boolean, JSON
+from sqlalchemy.orm import declarative_base, sessionmaker
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 from aiogram.enums import ParseMode
