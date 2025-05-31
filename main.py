@@ -100,31 +100,53 @@ async def get_name(message: Message, state: FSMContext):
 # Отправка вопроса
 async def send_next_question(chat_id, state: FSMContext):
     data = await state.get_data()
-    index = data["index"]
-    question_ids = data["questions"]
+    index = data.get("index", 0)  # Получаем текущий индекс вопроса
+    question_ids = data.get("questions", [])  # Список ID вопросов
 
     if index >= len(question_ids):
-        score = data["score"]
+        score = data.get("score", 0)
         user = db.query(User).filter_by(telegram_id=chat_id).first()
-        user.score = score
-        user.completed = True
-        db.commit()
-        await bot.send_message(chat_id, f"Тест завершён! Вы набрали {score} баллов.")
+        if user:
+            user.score = score
+            user.completed = True
+            db.commit()
+            await bot.send_message(chat_id, f"Тест завершён! Вы набрали {score} баллов.")
+        else:
+            logger.error(f"User with telegram_id {chat_id} not found")
+            await bot.send_message(chat_id, "Ошибка: пользователь не найден.")
         return
 
     q_id = question_ids[index]
-    question = db.query(Question).get(q_id)
+    question = db.get(Question, q_id)  # Используем Session.get
 
+    if not question:
+        logger.error(f"Question with id {q_id} not found")
+        await bot.send_message(chat_id, "Вопрос не найден.")
+        await state.update_data(index=index + 1)
+        await send_next_question(chat_id, state)
+        return
+
+    # Создание кнопок
     kb = InlineKeyboardBuilder()
-    for opt in question.options:
-        kb.button(text=opt, callback_data=opt)
+    for i, opt in enumerate(question.options):
+        callback_data = f"q{q_id}o{i}"
+        byte_length = len(callback_data.encode('utf-8'))
+        if byte_length > 64:
+            logger.error(f"Callback data too long ({byte_length} bytes): {callback_data}")
+            callback_data = f"q{q_id}o{i}"[:64]  # Обрезаем, если нужно
+        kb.button(text=opt, callback_data=callback_data)
+    kb.adjust(1)  # Одна кнопка в строке
+    logger.info(f"Sending question {q_id}: {question.text} with callback_data: {[b.callback_data for row in kb.as_markup().inline_keyboard for b in row]}")
+
     await bot.send_message(chat_id, question.text, reply_markup=kb.as_markup())
 
-    # Таймер 40 сек
+    # Таймер 40 секунд
     await asyncio.sleep(40)
     data = await state.get_data()
-    if data["index"] == index:  # пользователь не ответил
-        await state.update_data(index=index+1)
+    if data.get("index", 0) == index:  # Пользователь не ответил
+        logger.info(f"User {chat_id} did not answer question {q_id} in time")
+        await bot.send_message(chat_id, "Время вышло! Переходим к следующему вопросу.")
+        await state.update_data(index=index + 1)
         await send_next_question(chat_id, state)
 
 # Обработка ответа
