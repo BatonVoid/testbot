@@ -1,5 +1,5 @@
 import asyncio
-from aiogram import DefaultBotProperties
+from aiogram.client.bot import DefaultBotProperties
 from aiogram import Bot, Dispatcher, F, Router
 from aiogram.types import Message, CallbackQuery
 from aiogram.enums import ParseMode
