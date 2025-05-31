@@ -15,7 +15,7 @@ from sqlalchemy.orm import sessionmaker
 import random
 import json
 
-TOKEN = "ТОКЕН_СЮДА"
+TOKEN = "7909566566:AAEPuzHlvuME-WTOaL7jbGB_FHHCFtfG40Q"
 TEST_START = datetime(2025, 5, 1, 15, 0)
 TEST_END = datetime(2025, 5, 1, 16, 0)
 
