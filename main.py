@@ -26,6 +26,13 @@ dp = Dispatcher(storage=MemoryStorage())
 router = Router()
 dp.include_router(router)
 
+
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
 # База данных
 Base = declarative_base()
 engine = create_engine("sqlite:///test.db")
@@ -100,8 +107,8 @@ async def get_name(message: Message, state: FSMContext):
 # Отправка вопроса
 async def send_next_question(chat_id, state: FSMContext):
     data = await state.get_data()
-    index = data.get("index", 0)  # Получаем текущий индекс вопроса
-    question_ids = data.get("questions", [])  # Список ID вопросов
+    index = data.get("index", 0)
+    question_ids = data.get("questions", [])
 
     if index >= len(question_ids):
         score = data.get("score", 0)
@@ -117,8 +124,7 @@ async def send_next_question(chat_id, state: FSMContext):
         return
 
     q_id = question_ids[index]
-    question = db.get(Question, q_id)  # Используем Session.get
-
+    question = db.get(Question, q_id)  # Используем Session.get для SQLAlchemy 2.0
     if not question:
         logger.error(f"Question with id {q_id} not found")
         await bot.send_message(chat_id, "Вопрос не найден.")
@@ -126,14 +132,13 @@ async def send_next_question(chat_id, state: FSMContext):
         await send_next_question(chat_id, state)
         return
 
-    # Создание кнопок
     kb = InlineKeyboardBuilder()
     for i, opt in enumerate(question.options):
         callback_data = f"q{q_id}o{i}"
         byte_length = len(callback_data.encode('utf-8'))
         if byte_length > 64:
             logger.error(f"Callback data too long ({byte_length} bytes): {callback_data}")
-            callback_data = f"q{q_id}o{i}"[:64]  # Обрезаем, если нужно
+            callback_data = f"q{q_id}o{i}"[:64]
         kb.button(text=opt, callback_data=callback_data)
     kb.adjust(1)  # Одна кнопка в строке
     logger.info(f"Sending question {q_id}: {question.text} with callback_data: {[b.callback_data for row in kb.as_markup().inline_keyboard for b in row]}")
@@ -143,7 +148,7 @@ async def send_next_question(chat_id, state: FSMContext):
     # Таймер 40 секунд
     await asyncio.sleep(40)
     data = await state.get_data()
-    if data.get("index", 0) == index:  # Пользователь не ответил
+    if data.get("index", 0) == index:
         logger.info(f"User {chat_id} did not answer question {q_id} in time")
         await bot.send_message(chat_id, "Время вышло! Переходим к следующему вопросу.")
         await state.update_data(index=index + 1)
