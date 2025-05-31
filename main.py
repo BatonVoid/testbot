@@ -14,6 +14,7 @@ from sqlalchemy import create_engine, Column, Integer, String, BigInteger, Boole
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 from aiogram.client.default import DefaultBotProperties
+from aiogram.exceptions import TelegramForbiddenError
 
 # Настройки
 TOKEN = "7909566566:AAEPuzHlvuME-WTOaL7jbGB_FHHCFtfG40Q"
@@ -830,12 +831,29 @@ def estimate_duration_seconds(answered: int) -> int:
     slow = answered - fast
     return fast * random.randint(10, 25) + slow * 40
 
-# Команда /start
 @router.message(CommandStart())
 async def start(message: Message, state: FSMContext):
-    await message.answer("Введите ваше ФИО для участия в тесте:")
-    await state.set_state(TestStates.waiting_name)
+    now = datetime.now()
+    if now < TEST_START or now > TEST_END:
+        await message.answer("Тест доступен только с 1 июня 00:00 до 23:59:59.")
+        return
 
+    with Session() as db:
+        user = db.query(User).filter_by(telegram_id=message.from_user.id).first()
+        if user and user.completed:
+            try:
+                await message.answer(f"Вы уже прошли тест с результатом {user.score}/40.")
+            except TelegramForbiddenError:
+                logger.warning(f"User {message.from_user.id} blocked the bot")
+                return
+            return
+
+    try:
+        await message.answer("Введите ваше ФИО для участия в тесте:")
+        await state.set_state(TestStates.waiting_name)
+    except TelegramForbiddenError:
+        logger.warning(f"User {message.from_user.id} blocked the bot")
+        return
 
 
 
@@ -844,6 +862,15 @@ async def start(message: Message, state: FSMContext):
 async def get_name(message: Message, state: FSMContext):
     full_name = message.text.strip()
     telegram_id = message.from_user.id
+
+    if not full_name or len(full_name) < 5:
+        try:
+            await message.answer("Пожалуйста, введите корректное ФИО (не менее 5 символов).")
+        except TelegramForbiddenError:
+            logger.warning(f"User {telegram_id} blocked the bot")
+            await state.clear()
+            return
+        return
 
     with Session() as db:
         user = db.query(User).filter_by(telegram_id=telegram_id).first()
@@ -854,6 +881,14 @@ async def get_name(message: Message, state: FSMContext):
 
     with Session() as db:
         questions = db.query(Question).all()
+        if len(questions) < 40:
+            try:
+                await message.answer("Недостаточно вопросов в базе данных для проведения теста.")
+            except TelegramForbiddenError:
+                logger.warning(f"User {telegram_id} blocked the bot")
+                await state.clear()
+                return
+            return
         random.shuffle(questions)
 
     await state.update_data(
@@ -864,7 +899,12 @@ async def get_name(message: Message, state: FSMContext):
         start_time=datetime.utcnow().timestamp()
     )
     await state.set_state(TestStates.in_test)
-    await send_next_question(message.chat.id, state)
+    try:
+        await send_next_question(message.chat.id, state)
+    except TelegramForbiddenError:
+        logger.warning(f"User {telegram_id} blocked the bot")
+        await state.clear()
+        return
 
 # Отправка следующего вопроса
 async def send_next_question(chat_id, state: FSMContext):
@@ -873,7 +913,11 @@ async def send_next_question(chat_id, state: FSMContext):
     question_ids = data["questions"]
 
     if index >= len(question_ids):
-        await finish_test(chat_id, state)
+        try:
+            await finish_test(chat_id, state)
+        except TelegramForbiddenError:
+            logger.warning(f"User {chat_id} blocked the bot")
+            await state.clear()
         return
 
     q_id = question_ids[index]
@@ -884,38 +928,31 @@ async def send_next_question(chat_id, state: FSMContext):
     random.shuffle(options)
 
     kb = InlineKeyboardBuilder()
-    for opt in options:
-        kb.button(text=opt, callback_data=opt)
+    question_text = f"Вопрос {index + 1}/{len(question_ids)}:\n{question.text}\n\n"
+    for i, opt in enumerate(options, 1):
+        question_text += f"{i}. {opt}\n"
+        kb.button(text=str(i), callback_data=opt)
 
-    msg = await bot.send_message(chat_id, f"Вопрос {index + 1}/{len(question_ids)}:\n{question.text}", reply_markup=kb.as_markup())
-    await state.update_data(last_message_id=msg.message_id, current_options=options, current_question_id=q_id)
+    try:
+        msg = await bot.send_message(chat_id, question_text, reply_markup=kb.as_markup())
+        await state.update_data(last_message_id=msg.message_id, current_options=options, current_question_id=q_id)
+    except TelegramForbiddenError:
+        logger.warning(f"User {chat_id} blocked the bot")
+        await state.clear()
+        return
 
     await asyncio.sleep(40)
     data = await state.get_data()
     if data["index"] == index and not data.get("answered"):
-        await bot.delete_message(chat_id=chat_id, message_id=msg.message_id)
-        await state.update_data(index=index + 1, answered=False)
-        await bot.send_message(chat_id, "Время вышло! Следующий вопрос:")
-        await send_next_question(chat_id, state)
-
-# Завершение теста
-async def finish_test(chat_id, state: FSMContext):
-    data = await state.get_data()
-    score = data["score"]
-    start_ts = data.get("start_time")
-    duration = int(datetime.utcnow().timestamp() - start_ts) if start_ts else estimate_duration_seconds(score)
-
-    with Session() as db:
-        user = db.query(User).filter_by(telegram_id=chat_id).first()
-        user.score = score
-        user.completed = True
-        user.estimated_duration = duration
-        db.commit()
-
-    mins = duration // 60
-    await bot.send_message(chat_id, f"Вы завершили тест!\nРезультат: {score}/40\nВремя прохождения: {mins} минут.")
-    await state.clear()
-    logger.info(f"User {chat_id} completed test with score {score} and duration {mins}m")
+        try:
+            await bot.delete_message(chat_id=chat_id, message_id=msg.message_id)
+            await state.update_data(index=index + 1, answered=False)
+            await bot.send_message(chat_id, "Время вышло! Следующий вопрос:")
+            await send_next_question(chat_id, state)
+        except TelegramForbiddenError:
+            logger.warning(f"User {chat_id} blocked the bot")
+            await state.clear()
+            return
 
 # Ответ на вопрос
 @router.callback_query(TestStates.in_test)
@@ -927,7 +964,12 @@ async def handle_answer(callback: CallbackQuery, state: FSMContext):
     last_message_id = data.get("last_message_id")
 
     if last_message_id:
-        await bot.delete_message(chat_id=callback.message.chat.id, message_id=last_message_id)
+        try:
+            await bot.delete_message(chat_id=callback.message.chat.id, message_id=last_message_id)
+        except TelegramForbiddenError:
+            logger.warning(f"User {callback.message.chat.id} blocked the bot")
+            await state.clear()
+            return
 
     with Session() as db:
         question = db.query(Question).get(q_id)
@@ -935,16 +977,35 @@ async def handle_answer(callback: CallbackQuery, state: FSMContext):
     await state.update_data(answered=True)
     if callback.data == question.correct_option:
         await state.update_data(score=data["score"] + 1)
-        await callback.answer("Правильно!")
+        try:
+            await callback.answer("Правильно!")
+        except TelegramForbiddenError:
+            logger.warning(f"User {callback.message.chat.id} blocked the bot")
+            await state.clear()
+            return
     else:
-        await callback.answer("Неправильно.")
+        try:
+            await callback.answer("Неправильно.")
+        except TelegramForbiddenError:
+            logger.warning(f"User {callback.message.chat.id} blocked the bot")
+            await state.clear()
+            return
 
     if index + 1 < len(question_ids):
         await state.update_data(index=index + 1, answered=False)
-        await send_next_question(callback.message.chat.id, state)
+        try:
+            await send_next_question(callback.message.chat.id, state)
+        except TelegramForbiddenError:
+            logger.warning(f"User {callback.message.chat.id} blocked the bot")
+            await state.clear()
+            return
     else:
-        await finish_test(callback.message.chat.id, state)
-
+        try:
+            await finish_test(callback.message.chat.id, state)
+        except TelegramForbiddenError:
+            logger.warning(f"User {callback.message.chat.id} blocked the bot")
+            await state.clear()
+            return
 
 @router.message(Command("top10"))
 async def top10(message: Message):
