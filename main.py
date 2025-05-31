@@ -1,21 +1,17 @@
 import asyncio
 from aiogram import Bot, Dispatcher, F, Router
-from aiogram.types import Message, CallbackQuery
+from aiogram.types import Message, CallbackQuery, DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiogram.filters import Command, CommandStart
 from aiogram.fsm.storage.memory import MemoryStorage
-from datetime import datetime, timedelta
-from sqlalchemy import create_engine, Column, Integer, String, BigInteger, Boolean, JSON
+from datetime import datetime
+from sqlalchemy import create_engine, Column, Integer, String, BigInteger, Boolean, JSON, select
+from sqlalchemy.sql import func
 from sqlalchemy.orm import declarative_base, sessionmaker
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker
-from aiogram.enums import ParseMode
 import random
-from aiogram.types import DefaultBotProperties
 import logging
 import json
 
@@ -27,7 +23,6 @@ bot = Bot(token=TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher(storage=MemoryStorage())
 router = Router()
 dp.include_router(router)
-
 
 logging.basicConfig(
     level=logging.INFO,
@@ -64,16 +59,16 @@ class TestStates(StatesGroup):
     waiting_name = State()
     in_test = State()
 
-# Вопросы (добавь свои реальные вопросы в БД заранее)
+# Вопросы
 def load_questions_from_file():
     with open("questions.json", "r", encoding="utf-8") as f:
         question_data = json.load(f)
 
-    with Session() as db:
-        if db.query(Question).count() == 0:
+    with Session() as session:
+        if session.query(Question).count() == 0:
             for q in question_data:
-                db.add(Question(text=q["text"], options=q["options"], correct_option=q["correct"]))
-            db.commit()
+                session.add(Question(text=q["text"], options=q["options"], correct_option=q["correct"]))
+            session.commit()
             logger.info("✅ Вопросы из файла загружены в БД.")
 
 load_questions_from_file()
@@ -83,7 +78,7 @@ load_questions_from_file()
 async def start(message: Message, state: FSMContext):
     now = datetime.now()
     if not (TEST_START <= now <= TEST_END):
-        await message.answer("Тест доступен только 1 мая с 15:00 до 16:00.")
+        await message.answer("Тест доступен только 31 мая с 00:00 до 23:59.")
         return
     await message.answer("Введите ваше ФИО для участия:")
     await state.set_state(TestStates.waiting_name)
@@ -100,7 +95,6 @@ async def get_name(message: Message, state: FSMContext):
         db.add(user)
         db.commit()
 
-    # Выбираем 40 случайных вопросов
     questions = db.query(Question.id).order_by(func.random()).limit(40).all()
     if not questions:
         logger.error("No questions found in database")
@@ -123,10 +117,9 @@ async def send_next_question(chat_id, state: FSMContext):
     if index >= len(question_ids):
         score = data.get("score", 0)
         user_name = data.get("full_name", "Путник")
-        total_questions = len(question_ids)  # Должно быть 40
+        total_questions = len(question_ids)
         percentage = (score / total_questions * 100) if total_questions > 0 else 0
 
-        # Сохраняем результат в базе
         user = db.query(User).filter_by(telegram_id=chat_id).first()
         if user:
             user.score = score
@@ -138,7 +131,6 @@ async def send_next_question(chat_id, state: FSMContext):
             await state.clear()
             return
 
-        # Формируем сообщение с результатами
         result_message = (
             f"🌟 {user_name}, тест завершён! 🌟\n"
             f"Вы набрали <b>{score}</b> из <b>{total_questions}</b> баллов.\n"
@@ -154,7 +146,7 @@ async def send_next_question(chat_id, state: FSMContext):
             result_message += "Не сдавайтесь! Каждая попытка приближает вас к вершинам! 💪"
 
         await bot.send_message(chat_id, result_message)
-        await state.clear()  # Очищаем состояние
+        await state.clear()
         return
 
     q_id = question_ids[index]
@@ -179,7 +171,6 @@ async def send_next_question(chat_id, state: FSMContext):
 
     await bot.send_message(chat_id, question.text, reply_markup=kb.as_markup())
 
-    # Таймер 40 секунд
     await asyncio.sleep(40)
     data = await state.get_data()
     if data.get("index", 0) == index:
@@ -187,7 +178,6 @@ async def send_next_question(chat_id, state: FSMContext):
         await bot.send_message(chat_id, "Время вышло! Переходим к следующему вопросу.")
         await state.update_data(index=index + 1)
         await send_next_question(chat_id, state)
-
 
 # Обработка ответа
 @router.callback_query(TestStates.in_test)
