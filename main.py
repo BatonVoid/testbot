@@ -159,14 +159,21 @@ async def send_next_question(chat_id, state: FSMContext):
         await send_next_question(chat_id, state)
         return
 
+    shuffled_options = question.options[:]
+    random.shuffle(shuffled_options)
+    
+    # Сохраняем перемешанные варианты в состояние
+    await state.update_data(current_options=shuffled_options)
+    
     kb = InlineKeyboardBuilder()
-    for i, opt in enumerate(question.options):
+    for i, opt in enumerate(shuffled_options):
         callback_data = f"q{q_id}o{i}"
         byte_length = len(callback_data.encode('utf-8'))
         if byte_length > 64:
             logger.error(f"Callback data too long ({byte_length} bytes): {callback_data}")
-            callback_data = f"q{q_id}o{i}"[:64]
+            callback_data = callback_data[:64]
         kb.button(text=opt, callback_data=callback_data)
+
     kb.adjust(1)
     logger.info(f"Sending question {q_id}: {question.text} with callback_data: {[b.callback_data for row in kb.as_markup().inline_keyboard for b in row]}")
 
@@ -201,13 +208,12 @@ async def handle_answer(callback: CallbackQuery, state: FSMContext):
         if callback.data.startswith('q'):
             parts = callback.data.split('o')
             opt_id = int(parts[1])
-            selected_option = question.options[opt_id]
-            if selected_option == question.correct_option:
-                score = data.get("score", 0) + 1
-                await state.update_data(score=score)
-                await callback.message.answer("Правильный ответ! 🎉")
-            else:
-                await callback.message.answer(f"Неправильно. Правильный ответ: {question.correct_option}")
+            current_options = data.get("current_options", question.options)
+            if not (0 <= opt_id < len(current_options)):
+                await callback.answer("Неверный выбор.", show_alert=True)
+                return
+            
+            selected_option = current_options[opt_id]
     except (IndexError, ValueError) as e:
         logger.error(f"Invalid callback data: {callback.data}, error: {e}")
         await callback.answer("Ошибка при обработке ответа.", show_alert=True)
